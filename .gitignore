@@ -1,0 +1,6 @@
+out/
+app-out/
+release-out/
+**/bin/
+**/obj/
+*.pdb
