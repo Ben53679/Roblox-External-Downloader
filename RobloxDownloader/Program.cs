@@ -18,8 +18,14 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RobloxExternal");
         Directory.CreateDirectory(root);
-        using var mutex = new Mutex(true, @"Local\RobloxExternal.Downloader", out var firstInstance);
-        if (!firstInstance) return;
+        FileStream processLock;
+        try
+        {
+            processLock = new FileStream(Path.Combine(root, "downloader.lock"), FileMode.OpenOrCreate,
+                FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (IOException) { return; }
+        using var lockHandle = processLock;
 
         try
         {
@@ -53,10 +59,6 @@ internal static class Program
         {
             Log(root, "Startup failed: " + ex);
             MessageBox.Show(ex.Message, "Roblox External Downloader", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-        finally
-        {
-            mutex.ReleaseMutex();
         }
     }
 

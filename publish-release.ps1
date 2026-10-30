@@ -25,6 +25,9 @@ if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip }
 Compress-Archive -LiteralPath (Join-Path $appOut 'RobloxExternal.exe') -DestinationPath $zip
 $downloader = Join-Path $downloaderOut 'roblox downloader.exe'
 if (-not (Test-Path -LiteralPath $downloader)) { throw 'Downloader executable was not published.' }
+$downloaderZip = Join-Path $releaseOut 'roblox-downloader-win-x64.zip'
+if (Test-Path -LiteralPath $downloaderZip) { Remove-Item -LiteralPath $downloaderZip }
+Compress-Archive -LiteralPath $downloader -DestinationPath $downloaderZip
 
-gh release create $tag $zip $downloader --repo Ben53679/Roblox-External-Downloader --title $tag --generate-notes --latest
+gh release create $tag $zip $downloader $downloaderZip --repo Ben53679/Roblox-External-Downloader --title $tag --generate-notes --latest
 if ($LASTEXITCODE -ne 0) { throw 'GitHub release creation failed.' }

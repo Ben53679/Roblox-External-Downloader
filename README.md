@@ -1,6 +1,6 @@
 # Roblox External Downloader
 
-Download **`roblox downloader.exe`** from the [latest release](https://github.com/Ben53679/Roblox-External-Downloader/releases/latest) and run it on Windows x64. It installs itself under `%LOCALAPPDATA%\RobloxExternal` and adds **Roblox External** and **Roblox Extenral** shortcuts to the current user's Start menu. The second name supports the requested search spelling.
+Download `roblox-downloader-win-x64.zip` from the [latest release](https://github.com/Ben53679/Roblox-External-Downloader/releases/latest), extract **`roblox downloader.exe`**, and run it on Windows x64. It installs itself under `%LOCALAPPDATA%\RobloxExternal` and adds **Roblox External** and **Roblox Extenral** shortcuts to the current user's Start menu. The second name supports the requested search spelling.
 
 On each launch, the downloader checks this repository's latest stable GitHub release. If its version tag differs from the installed one, it downloads `RobloxExternal-win-x64.zip`, verifies the SHA-256 digest reported by GitHub, installs it into a versioned folder, and starts `RobloxExternal.exe`. If GitHub cannot be reached, it starts the previously installed version. The first launch needs internet access. No GitHub sign-in is needed to download public releases.
 
