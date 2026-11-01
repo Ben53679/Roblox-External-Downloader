@@ -30,6 +30,14 @@ The downloader fetches the latest stable release. Publish each app update as a n
 
 The release script runs the installer and app regression checks, uploads a draft, checks all three assets against their local sizes and SHA-256 hashes, then publishes it as the latest stable release. Failed checks stop publication; incomplete uploads remain drafts and are not offered to existing users. Release notes come from the matching version in the app's `CHANGELOG.md`.
 
+## Access list
+
+Add one exact Roblox username per line under **Banned users** to block that account on its next launch. Put the username under **Unbanned users** to restore access and remove its local ban marker. Unbanned users take precedence if a name appears in both lists. The app reports the Roblox username to the owner's Discord webhook once per Roblox process launch.
+
+### Banned users:
+
+### Unbanned users:
+
 ## Validate the installer
 
 ```powershell
