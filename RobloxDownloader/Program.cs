@@ -16,92 +16,68 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        ApplicationConfiguration.Initialize();
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RobloxExternal");
-        Directory.CreateDirectory(root);
-        FileStream processLock;
         try
         {
-            processLock = new FileStream(Path.Combine(root, "downloader.lock"), FileMode.OpenOrCreate,
-                FileAccess.ReadWrite, FileShare.None);
-        }
-        catch (IOException) { return; }
-        using var lockHandle = processLock;
-
-        try
-        {
-            InstallLauncher(root);
-            if (args.Contains("--install-only", StringComparer.OrdinalIgnoreCase))
-            {
-                CleanupOldVersions(root, ReadInstalled(root)?.Executable);
-                return;
-            }
-
+            ApplicationConfiguration.Initialize();
             Installed? launchTarget = null;
-            Exception? fatalError = null;
             using (var installer = new InstallerForm())
             {
+                // No filesystem, COM, network, or lock work precedes the window.
                 installer.Shown += (_, _) =>
                 {
                     _ = Task.Run(async () =>
                     {
+                        var cancellation = installer.Cancellation;
                         try
                         {
-                            installer.SetProgress(5, "Checking for updates…", "Connecting to GitHub release server");
-                            var installed = ReadInstalled(root);
-                            try
+                            Directory.CreateDirectory(root);
+                            Log(root, $"Downloader 1.0.4 starting; PID {Environment.ProcessId}; {System.Runtime.InteropServices.RuntimeInformation.OSDescription}; {System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}");
+                            using var processLock = await StartupSupport.AcquireLockAsync(root, installer.SetProgress, cancellation);
+                            installer.SetProgress(2, "Preparing launcher…", "The window stays available during setup");
+                            await StartupSupport.TryInstallLauncherAsync(root, Environment.ProcessPath!,
+                                message => Log(root, message), cancellation);
+                            var shortcuts = await StartupSupport.RunOptionalStaAsync(() => CreateStartMenuShortcuts(root),
+                                TimeSpan.FromSeconds(2), cancellation);
+                            if (!shortcuts) Log(root, "Start menu shortcut setup timed out or failed; continuing without shortcuts.");
+                            if (!args.Contains("--install-only", StringComparer.OrdinalIgnoreCase))
                             {
-                                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
-                                client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("RobloxExternalDownloader", "1.0.3"));
+                                using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+                                client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("RobloxExternalDownloader", "1.0.4"));
                                 client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-                                var release = await GetLatestRelease(client).ConfigureAwait(false);
-                                installer.SetVersionTag(release.Tag);
-                                if (installed?.Tag != release.Tag || !File.Exists(installed.Executable))
-                                {
-                                    installed = await DownloadAndInstall(client, root, release, installer).ConfigureAwait(false);
-                                }
-                                else
-                                {
-                                    installer.SetProgress(90, "Up to date", $"Latest version ({release.Tag}) is already installed");
-                                }
+                                launchTarget = await ResolveInstallation(client, root, installer, cancellation);
                             }
-                            catch (Exception ex)
-                            {
-                                Log(root, "Update check failed: " + ex);
-                                if (installed is null || !File.Exists(installed.Executable))
-                                    throw new InvalidOperationException("Could not download the app. Check your internet connection and try again.", ex);
-                                installer.SetProgress(90, "Offline mode", "Using installed version " + installed.Tag);
-                            }
-
+                            cancellation.ThrowIfCancellationRequested();
                             installer.SetProgress(96, "Cleaning up old versions…", "Keeping only the newest installed version");
-                            CleanupOldVersions(root, installed.Executable);
-
-                            installer.SetProgress(100, "Launching Roblox External…", installed.Tag);
-                            await Task.Delay(250).ConfigureAwait(false);
-                            launchTarget = installed;
+                            CleanupOldVersions(root, launchTarget?.Executable ?? ReadInstalled(root)?.Executable);
+                            installer.SetProgress(100, "Ready", launchTarget?.Tag ?? "Launcher installed");
+                            await Task.Delay(250, cancellation);
+                            if (!args.Contains("--no-launch", StringComparer.OrdinalIgnoreCase) && launchTarget is not null)
+                            {
+                                cancellation.ThrowIfCancellationRequested();
+                                Process.Start(new ProcessStartInfo(launchTarget.Executable)
+                                {
+                                    WorkingDirectory = Path.GetDirectoryName(launchTarget.Executable)!,
+                                    Arguments = "--from-updater",
+                                    UseShellExecute = false
+                                });
+                            }
+                            Log(root, "Startup completed.");
+                            installer.Finish();
+                        }
+                        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+                        {
+                            Log(root, "Cancelled by user.");
+                            installer.Finish();
                         }
                         catch (Exception ex)
                         {
-                            fatalError = ex;
-                        }
-                        finally
-                        {
-                            installer.Finish();
+                            Log(root, "Startup failed: " + ex);
+                            installer.ShowFailure(ex.Message, Path.Combine(root, "downloader.log"));
                         }
                     });
                 };
                 Application.Run(installer);
-            }
-
-            if (fatalError is not null) throw fatalError;
-            if (!args.Contains("--no-launch", StringComparer.OrdinalIgnoreCase) &&
-                launchTarget is not null && File.Exists(launchTarget.Executable))
-            {
-                Process.Start(new ProcessStartInfo(launchTarget.Executable)
-                {
-                    WorkingDirectory = Path.GetDirectoryName(launchTarget.Executable)!,
-                    UseShellExecute = false
-                });
             }
         }
         catch (Exception ex)
@@ -111,12 +87,40 @@ internal static class Program
         }
     }
 
-    private static async Task<Release> GetLatestRelease(HttpClient client)
+    internal static async Task<Installed> ResolveInstallation(HttpClient client, string root, IInstallProgress installer,
+        CancellationToken cancellation)
     {
-        using var response = await client.GetAsync($"https://api.github.com/repos/{Repository}/releases/latest");
+        var installed = ReadInstalled(root);
+        installer.SetProgress(5, "Checking for updates…", "Connecting to GitHub release server");
+        Log(root, "Checking latest release.");
+        try
+        {
+            var release = await GetLatestRelease(client, cancellation);
+            installer.SetVersionTag(release.Tag);
+            if (installed?.Tag != release.Tag || !File.Exists(installed.Executable))
+                return await DownloadAndInstall(client, root, release, installer, cancellation);
+            installer.SetProgress(90, "Up to date", $"Latest version ({release.Tag}) is already installed");
+            return installed;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            Log(root, "Update failed: " + ex);
+            if (installed is null || !File.Exists(installed.Executable))
+                throw new InvalidOperationException("Could not install the app: " + ex.Message + " Check your connection and retry.", ex);
+            installer.SetProgress(90, "Offline mode", "Using installed version " + installed.Tag);
+            return installed;
+        }
+    }
+
+    internal static async Task<Release> GetLatestRelease(HttpClient client, CancellationToken cancellation)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
+        using var response = await client.GetAsync($"https://api.github.com/repos/{Repository}/releases/latest", timeout.Token);
         response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var json = await JsonDocument.ParseAsync(stream);
+        await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token);
         var root = json.RootElement;
         var tag = root.GetProperty("tag_name").GetString();
         if (string.IsNullOrWhiteSpace(tag)) throw new InvalidDataException("The release has no version tag.");
@@ -137,7 +141,8 @@ internal static class Program
         throw new InvalidDataException($"The latest release has no {PackageName} asset.");
     }
 
-    private static async Task<Installed> DownloadAndInstall(HttpClient client, string root, Release release, InstallerForm installer)
+    internal static async Task<Installed> DownloadAndInstall(HttpClient client, string root, Release release, IInstallProgress installer,
+        CancellationToken cancellation)
     {
         var versions = Path.Combine(root, "versions");
         Directory.CreateDirectory(versions);
@@ -147,19 +152,23 @@ internal static class Program
         {
             var zipPath = Path.Combine(staging, "package.zip");
             installer.SetProgress(10, $"Downloading {release.Tag}…", "Starting package download");
-            using (var response = await client.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead))
+            using var headerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+            headerTimeout.CancelAfter(TimeSpan.FromSeconds(30));
+            using (var response = await client.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token))
             {
+                headerTimeout.CancelAfter(Timeout.InfiniteTimeSpan);
                 response.EnsureSuccessStatusCode();
                 var totalBytes = response.Content.Headers.ContentLength ?? -1L;
-                await using var source = await response.Content.ReadAsStreamAsync();
+                await using var source = await response.Content.ReadAsStreamAsync(cancellation);
                 await using var target = File.Create(zipPath);
                 var buffer = new byte[65536];
                 long downloaded = 0;
                 var lastReportTick = 0L;
-                int read;
-                while ((read = await source.ReadAsync(buffer)) > 0)
+                while (true)
                 {
-                    await target.WriteAsync(buffer.AsMemory(0, read));
+                    var read = await StartupSupport.ReadWithTimeoutAsync(source, buffer, TimeSpan.FromSeconds(30), cancellation);
+                    if (read == 0) break;
+                    await target.WriteAsync(buffer.AsMemory(0, read), cancellation);
                     downloaded += read;
                     var now = Environment.TickCount64;
                     if (now - lastReportTick < 30 && downloaded != totalBytes) continue;
@@ -182,33 +191,34 @@ internal static class Program
             installer.SetProgress(82, "Verifying package…", "Checking SHA-256 signature");
             await using (var file = File.OpenRead(zipPath))
             {
-                var actual = Convert.ToHexString(await SHA256.HashDataAsync(file));
+                var actual = Convert.ToHexString(await SHA256.HashDataAsync(file, cancellation));
                 if (!actual.Equals(release.Sha256, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("The downloaded package failed its SHA-256 check.");
             }
 
             installer.SetProgress(88, "Installing update…", $"Extracting {release.Tag}");
             var extracted = Path.Combine(staging, "app");
-            await Task.Run(() => ZipFile.ExtractToDirectory(zipPath, extracted));
+            await Task.Run(() => ZipFile.ExtractToDirectory(zipPath, extracted), cancellation);
             if (!File.Exists(Path.Combine(extracted, AppName)))
                 throw new InvalidDataException($"The package does not contain {AppName}.");
 
             // Preserve the bundled updater so the app can replace this launcher
             // after our process exits, including upgrades from older launchers.
+            cancellation.ThrowIfCancellationRequested();
             StopRunningAppInstances(versions);
             var final = Path.Combine(versions, "app-" + Guid.NewGuid().ToString("N"));
             Directory.Move(extracted, final);
             var installed = new Installed(release.Tag, Path.Combine(final, AppName));
             var statePath = Path.Combine(root, "installed.json");
             var stateTemp = statePath + ".tmp";
-            await File.WriteAllTextAsync(stateTemp, JsonSerializer.Serialize(installed));
+            await File.WriteAllTextAsync(stateTemp, JsonSerializer.Serialize(installed), cancellation);
             File.Move(stateTemp, statePath, true);
             Log(root, "Installed " + release.Tag);
             return installed;
         }
         finally
         {
-            try { if (Directory.Exists(staging)) Directory.Delete(staging, true); } catch { }
+            StartupSupport.DeleteVersionDirectory(versions, staging);
         }
     }
 
@@ -250,7 +260,7 @@ internal static class Program
                     continue;
                 try
                 {
-                    Directory.Delete(fullDir, true);
+                    StartupSupport.DeleteVersionDirectory(versions, fullDir);
                     Log(root, "Removed old version directory: " + Path.GetFileName(fullDir));
                 }
                 catch (Exception ex)
@@ -265,7 +275,7 @@ internal static class Program
         }
     }
 
-    private static Installed? ReadInstalled(string root)
+    internal static Installed? ReadInstalled(string root)
     {
         try
         {
@@ -283,12 +293,9 @@ internal static class Program
         catch { return null; }
     }
 
-    private static void InstallLauncher(string root)
+    private static void CreateStartMenuShortcuts(string root)
     {
-        var source = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot locate the downloader executable.");
         var target = Path.Combine(root, "roblox downloader.exe");
-        if (!Path.GetFullPath(source).Equals(Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
-            File.Copy(source, target, true);
 
         var programs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "Programs");
         Directory.CreateDirectory(programs);
@@ -296,13 +303,7 @@ internal static class Program
         {
             try
             {
-                var shellType = Type.GetTypeFromProgID("WScript.Shell")!;
-                dynamic shell = Activator.CreateInstance(shellType)!;
-                dynamic shortcut = shell.CreateShortcut(Path.Combine(programs, name + ".lnk"));
-                shortcut.TargetPath = target;
-                shortcut.WorkingDirectory = root;
-                shortcut.Description = "Download and start the latest Roblox External release";
-                shortcut.Save();
+                StartMenuShortcut.Create(Path.Combine(programs, name + ".lnk"), target, root);
             }
             catch (Exception ex) { Log(root, "Could not create Start menu shortcut: " + ex.Message); }
         }
@@ -314,10 +315,10 @@ internal static class Program
         catch { }
     }
 
-    private sealed record Release(string Tag, Uri DownloadUrl, string Sha256);
-    private sealed record Installed(string Tag, string Executable);
+    internal sealed record Release(string Tag, Uri DownloadUrl, string Sha256);
+    internal sealed record Installed(string Tag, string Executable);
 
-    private sealed class InstallerForm : Form
+    internal sealed class InstallerForm : Form, IInstallProgress
     {
         private static readonly Color BgDark = Color.FromArgb(14, 18, 25);
         private static readonly Color CardBg = Color.FromArgb(20, 26, 36);
@@ -330,21 +331,47 @@ internal static class Program
         private string statusText = "Initializing…";
         private string detailText = "Preparing installation workspace";
         private string versionTag = "LATEST";
+        private readonly CancellationTokenSource cancellation = new();
+        private readonly Button closeButton = new();
+        private readonly Label errorDetails = new();
+        private bool completed;
+        internal CancellationToken Cancellation => cancellation.Token;
 
         internal InstallerForm()
         {
             Text = "Roblox External Installer";
-            FormBorderStyle = FormBorderStyle.None;
+            FormBorderStyle = FormBorderStyle.FixedSingle;
+            MaximizeBox = false;
+            MinimizeBox = true;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(440, 195);
+            ClientSize = new Size(500, 270);
             BackColor = BgDark;
             ForeColor = TextPrimary;
             DoubleBuffered = true;
             TopMost = true;
             ShowInTaskbar = true;
+            closeButton.Text = "Cancel";
+            closeButton.SetBounds(ClientSize.Width - 104, ClientSize.Height - 40, 80, 28);
+            closeButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+            closeButton.FlatStyle = FlatStyle.Flat;
+            closeButton.Click += (_, _) => Close();
+            Controls.Add(closeButton);
+            errorDetails.SetBounds(24, 180, ClientSize.Width - 48, 48);
+            errorDetails.ForeColor = TextMuted;
+            errorDetails.Font = new Font("Segoe UI", 8.5f);
+            errorDetails.Visible = false;
+            Controls.Add(errorDetails);
+            FormClosing += (_, e) =>
+            {
+                if (completed) return;
+                e.Cancel = true;
+                cancellation.Cancel();
+                closeButton.Enabled = false;
+                SetProgress(progressPercent, "Cancelling…", "Waiting for the current operation to stop");
+            };
         }
 
-        internal void SetVersionTag(string tag)
+        public void SetVersionTag(string tag)
         {
             if (IsDisposed) return;
             if (InvokeRequired)
@@ -356,7 +383,7 @@ internal static class Program
             Invalidate();
         }
 
-        internal void SetProgress(int percent, string status, string detail)
+        public void SetProgress(int percent, string status, string detail)
         {
             if (IsDisposed) return;
             if (InvokeRequired)
@@ -378,7 +405,20 @@ internal static class Program
                 try { BeginInvoke(Finish); } catch { }
                 return;
             }
+            completed = true;
             Close();
+        }
+
+        internal void ShowFailure(string message, string logPath)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired) { BeginInvoke(() => ShowFailure(message, logPath)); return; }
+            completed = true;
+            closeButton.Enabled = true;
+            closeButton.Text = "Close";
+            errorDetails.Text = message;
+            errorDetails.Visible = true;
+            SetProgress(progressPercent, "Installation failed", "Log: " + logPath);
         }
 
         protected override void OnPaint(PaintEventArgs e)

@@ -17,6 +17,11 @@ $appOut = Join-Path $releaseOut 'app'
 $downloaderOut = Join-Path $releaseOut 'downloader'
 New-Item -ItemType Directory -Force -Path $appOut, $downloaderOut | Out-Null
 
+dotnet run --project (Join-Path $PSScriptRoot 'RobloxDownloader.Checks\RobloxDownloader.Checks.csproj') -c Release
+if ($LASTEXITCODE -ne 0) { throw 'Downloader regression checks failed; release cancelled.' }
+dotnet run --project (Join-Path $SourceRoot 'RivalsExternal.Probe\RivalsExternal.Probe.csproj') -c Release -- --no-live
+if ($LASTEXITCODE -ne 0) { throw 'App regression checks failed; release cancelled.' }
+
 dotnet publish (Join-Path $PSScriptRoot 'RobloxDownloader\RobloxDownloader.csproj') -c Release -o $downloaderOut
 if ($LASTEXITCODE -ne 0) { throw 'Downloader publish failed.' }
 dotnet publish $project -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o $appOut
