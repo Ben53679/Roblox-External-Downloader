@@ -6,6 +6,7 @@
 
 Banned users:
 Kkhzjhgf
+G7NMars
 
 Unbanned users:
 
