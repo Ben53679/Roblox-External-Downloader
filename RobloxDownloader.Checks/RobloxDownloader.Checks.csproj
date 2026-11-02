@@ -2,7 +2,6 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RobloxDownloader</RootNamespace>
@@ -10,6 +9,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\RobloxDownloader\Program.cs" Link="DownloaderProgram.cs" />
+    <Compile Include="..\RobloxDownloader\ConsoleProgress.cs" Link="ConsoleProgress.cs" />
     <Compile Include="..\RobloxDownloader\StartupSupport.cs" Link="StartupSupport.cs" />
     <Compile Include="..\RobloxDownloader\StartMenuShortcut.cs" Link="StartMenuShortcut.cs" />
   </ItemGroup>

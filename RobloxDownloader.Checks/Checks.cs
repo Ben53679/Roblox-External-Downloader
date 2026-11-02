@@ -8,22 +8,20 @@ namespace RobloxDownloader.Checks;
 
 internal static class Checks
 {
-    [STAThread]
     private static int Main(string[] args)
     {
-        ApplicationConfiguration.Initialize();
         if (args.Contains("--show-failure"))
         {
-            using var preview = new Program.InstallerForm();
-            preview.Shown += (_, _) => preview.ShowFailure("Another downloader is already running. Close its window, or end the stuck downloader in Task Manager, then retry.", "%LOCALAPPDATA%\\RobloxExternal\\downloader.log");
-            Application.Run(preview);
+            Console.WriteLine("INSTALLATION FAILED");
+            Console.WriteLine("Another downloader is already running. Close its window, or end the stuck downloader in Task Manager, then retry.");
+            Console.WriteLine("Log: %LOCALAPPDATA%\\RobloxExternal\\downloader.log");
             return 0;
         }
         try
         {
             RunAsync().GetAwaiter().GetResult();
-            VerifyWindow();
-            Console.WriteLine("Downloader checks passed: fresh install, Unicode paths, update, hashes, settings, offline, cancellation, lock contention, bounded setup, native shortcuts and responsive UI.");
+            VerifyConsoleProgress();
+            Console.WriteLine("Downloader checks passed: fresh install, Unicode paths, update, hashes, settings, offline, cancellation, lock contention, bounded setup, native shortcuts and CMD progress.");
             return 0;
         }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
@@ -116,30 +114,17 @@ internal static class Checks
         }
     }
 
-    private static void VerifyWindow()
+    private static void VerifyConsoleProgress()
     {
-        using var form = new Program.InstallerForm();
-        using var timer = new System.Windows.Forms.Timer { Interval = 15 };
-        var ticks = 0;
-        Exception? failure = null;
-        timer.Tick += (_, _) => ticks++;
-        form.Shown += async (_, _) =>
-        {
-            timer.Start();
-            try
-            {
-                using var blocked = new ManualResetEventSlim();
-                var result = await Task.Run(() => StartupSupport.RunOptionalStaAsync(() => blocked.Wait(), TimeSpan.FromMilliseconds(250), CancellationToken.None));
-                blocked.Set();
-                Require(!result && ticks >= 3 && form.Visible && form.IsHandleCreated, "Installer window stalled during optional shell setup.");
-                form.ShowFailure("A test network error remains visible until Close is pressed.", "downloader.log");
-                Require(form.Visible && form.Controls.OfType<Button>().Any(b => b.Text == "Close" && b.Enabled), "Failure did not leave an actionable window.");
-            }
-            catch (Exception ex) { failure = ex; }
-            finally { form.Finish(); }
-        };
-        Application.Run(form);
-        if (failure is not null) throw failure;
+        using var output = new StringWriter();
+        var progress = new ConsoleProgress(output);
+        progress.SetVersionTag("v0.2.23");
+        progress.SetProgress(5, "Checking for updates", "Connecting to GitHub");
+        progress.SetProgress(100, "Ready", "v0.2.23");
+        var text = output.ToString();
+        Require(text.Contains("Latest release: v0.2.23") &&
+            text.Contains("[  5%] Checking for updates") &&
+            text.Contains("[100%] Ready"), "CMD progress output is incomplete.");
     }
 
     private sealed class Progress : IInstallProgress

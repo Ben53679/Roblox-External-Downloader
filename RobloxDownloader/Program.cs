@@ -1,8 +1,8 @@
 using System.Diagnostics;
-using System.Drawing.Drawing2D;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace RobloxDownloader;
@@ -13,78 +13,75 @@ internal static class Program
     private const string PackageName = "RobloxExternal-win-x64.zip";
     private const string AppName = "RobloxExternal.exe";
 
-    [STAThread]
-    private static void Main(string[] args)
+    private static async Task<int> Main(string[] args)
     {
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RobloxExternal");
+        using var cancellation = new CancellationTokenSource();
+        ConsoleCancelEventHandler onCancel = (_, e) => { e.Cancel = true; cancellation.Cancel(); };
+        Console.CancelKeyPress += onCancel;
         try
         {
-            ApplicationConfiguration.Initialize();
+            Console.OutputEncoding = Encoding.UTF8;
+            try { Console.Title = "Roblox External Installer"; } catch (IOException) { }
+            Console.WriteLine("ROBLOX EXTERNAL - INSTALLER / UPDATER");
+            Console.WriteLine("Press Ctrl+C to cancel.\n");
+            var installer = new ConsoleProgress(Console.Out);
             Installed? launchTarget = null;
-            using (var installer = new InstallerForm())
+            Directory.CreateDirectory(root);
+            Log(root, $"Downloader 1.0.5 starting; PID {Environment.ProcessId}; {System.Runtime.InteropServices.RuntimeInformation.OSDescription}; {System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}");
+            using (var processLock = await StartupSupport.AcquireLockAsync(root, installer.SetProgress, cancellation.Token))
             {
-                // No filesystem, COM, network, or lock work precedes the window.
-                installer.Shown += (_, _) =>
+                installer.SetProgress(2, "Preparing launcher", "Setting up local files");
+                await StartupSupport.TryInstallLauncherAsync(root, Environment.ProcessPath!,
+                    message => Log(root, message), cancellation.Token);
+                var shortcuts = await StartupSupport.RunOptionalStaAsync(() => CreateStartMenuShortcuts(root),
+                    TimeSpan.FromSeconds(2), cancellation.Token);
+                if (!shortcuts) Log(root, "Start menu shortcut setup timed out or failed; continuing without shortcuts.");
+                if (!args.Contains("--install-only", StringComparer.OrdinalIgnoreCase))
                 {
-                    _ = Task.Run(async () =>
+                    using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+                    client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("RobloxExternalDownloader", "1.0.5"));
+                    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+                    launchTarget = await ResolveInstallation(client, root, installer, cancellation.Token);
+                }
+                cancellation.Token.ThrowIfCancellationRequested();
+                installer.SetProgress(96, "Cleaning up old versions", "Keeping only the newest installed version");
+                CleanupOldVersions(root, launchTarget?.Executable ?? ReadInstalled(root)?.Executable);
+                installer.SetProgress(100, "Ready", launchTarget?.Tag ?? "Launcher installed");
+                if (!args.Contains("--no-launch", StringComparer.OrdinalIgnoreCase) && launchTarget is not null)
+                {
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    Process.Start(new ProcessStartInfo(launchTarget.Executable)
                     {
-                        var cancellation = installer.Cancellation;
-                        try
-                        {
-                            Directory.CreateDirectory(root);
-                            Log(root, $"Downloader 1.0.4 starting; PID {Environment.ProcessId}; {System.Runtime.InteropServices.RuntimeInformation.OSDescription}; {System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}");
-                            using var processLock = await StartupSupport.AcquireLockAsync(root, installer.SetProgress, cancellation);
-                            installer.SetProgress(2, "Preparing launcher…", "The window stays available during setup");
-                            await StartupSupport.TryInstallLauncherAsync(root, Environment.ProcessPath!,
-                                message => Log(root, message), cancellation);
-                            var shortcuts = await StartupSupport.RunOptionalStaAsync(() => CreateStartMenuShortcuts(root),
-                                TimeSpan.FromSeconds(2), cancellation);
-                            if (!shortcuts) Log(root, "Start menu shortcut setup timed out or failed; continuing without shortcuts.");
-                            if (!args.Contains("--install-only", StringComparer.OrdinalIgnoreCase))
-                            {
-                                using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-                                client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("RobloxExternalDownloader", "1.0.4"));
-                                client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-                                launchTarget = await ResolveInstallation(client, root, installer, cancellation);
-                            }
-                            cancellation.ThrowIfCancellationRequested();
-                            installer.SetProgress(96, "Cleaning up old versions…", "Keeping only the newest installed version");
-                            CleanupOldVersions(root, launchTarget?.Executable ?? ReadInstalled(root)?.Executable);
-                            installer.SetProgress(100, "Ready", launchTarget?.Tag ?? "Launcher installed");
-                            await Task.Delay(250, cancellation);
-                            if (!args.Contains("--no-launch", StringComparer.OrdinalIgnoreCase) && launchTarget is not null)
-                            {
-                                cancellation.ThrowIfCancellationRequested();
-                                Process.Start(new ProcessStartInfo(launchTarget.Executable)
-                                {
-                                    WorkingDirectory = Path.GetDirectoryName(launchTarget.Executable)!,
-                                    Arguments = "--from-updater",
-                                    UseShellExecute = false
-                                });
-                            }
-                            Log(root, "Startup completed.");
-                            installer.Finish();
-                        }
-                        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-                        {
-                            Log(root, "Cancelled by user.");
-                            installer.Finish();
-                        }
-                        catch (Exception ex)
-                        {
-                            Log(root, "Startup failed: " + ex);
-                            installer.ShowFailure(ex.Message, Path.Combine(root, "downloader.log"));
-                        }
+                        WorkingDirectory = Path.GetDirectoryName(launchTarget.Executable)!,
+                        Arguments = "--from-updater",
+                        UseShellExecute = false
                     });
-                };
-                Application.Run(installer);
+                }
             }
+            Log(root, "Startup completed.");
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            Log(root, "Cancelled by user.");
+            Console.WriteLine("\nInstallation cancelled.");
+            return 1;
         }
         catch (Exception ex)
         {
             Log(root, "Startup failed: " + ex);
-            MessageBox.Show(ex.Message, "Roblox External Installer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Console.Error.WriteLine("\nINSTALLATION FAILED");
+            Console.Error.WriteLine(ex.Message);
+            Console.Error.WriteLine("Log: " + Path.Combine(root, "downloader.log"));
+            if (!args.Contains("--no-pause", StringComparer.OrdinalIgnoreCase) && !Console.IsInputRedirected)
+            {
+                Console.WriteLine("\nPress Enter to close this window.");
+                Console.ReadLine();
+            }
+            return 1;
         }
+        finally { Console.CancelKeyPress -= onCancel; }
     }
 
     internal static async Task<Installed> ResolveInstallation(HttpClient client, string root, IInstallProgress installer,
@@ -318,170 +315,4 @@ internal static class Program
     internal sealed record Release(string Tag, Uri DownloadUrl, string Sha256);
     internal sealed record Installed(string Tag, string Executable);
 
-    internal sealed class InstallerForm : Form, IInstallProgress
-    {
-        private static readonly Color BgDark = Color.FromArgb(14, 18, 25);
-        private static readonly Color CardBg = Color.FromArgb(20, 26, 36);
-        private static readonly Color BorderColor = Color.FromArgb(38, 49, 64);
-        private static readonly Color AccentMint = Color.FromArgb(98, 224, 187);
-        private static readonly Color TextPrimary = Color.FromArgb(236, 242, 248);
-        private static readonly Color TextMuted = Color.FromArgb(142, 160, 178);
-
-        private int progressPercent;
-        private string statusText = "Initializing…";
-        private string detailText = "Preparing installation workspace";
-        private string versionTag = "LATEST";
-        private readonly CancellationTokenSource cancellation = new();
-        private readonly Button closeButton = new();
-        private readonly Label errorDetails = new();
-        private bool completed;
-        internal CancellationToken Cancellation => cancellation.Token;
-
-        internal InstallerForm()
-        {
-            Text = "Roblox External Installer";
-            FormBorderStyle = FormBorderStyle.FixedSingle;
-            MaximizeBox = false;
-            MinimizeBox = true;
-            StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(500, 270);
-            BackColor = BgDark;
-            ForeColor = TextPrimary;
-            DoubleBuffered = true;
-            TopMost = true;
-            ShowInTaskbar = true;
-            closeButton.Text = "Cancel";
-            closeButton.SetBounds(ClientSize.Width - 104, ClientSize.Height - 40, 80, 28);
-            closeButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
-            closeButton.FlatStyle = FlatStyle.Flat;
-            closeButton.Click += (_, _) => Close();
-            Controls.Add(closeButton);
-            errorDetails.SetBounds(24, 180, ClientSize.Width - 48, 48);
-            errorDetails.ForeColor = TextMuted;
-            errorDetails.Font = new Font("Segoe UI", 8.5f);
-            errorDetails.Visible = false;
-            Controls.Add(errorDetails);
-            FormClosing += (_, e) =>
-            {
-                if (completed) return;
-                e.Cancel = true;
-                cancellation.Cancel();
-                closeButton.Enabled = false;
-                SetProgress(progressPercent, "Cancelling…", "Waiting for the current operation to stop");
-            };
-        }
-
-        public void SetVersionTag(string tag)
-        {
-            if (IsDisposed) return;
-            if (InvokeRequired)
-            {
-                try { BeginInvoke(() => SetVersionTag(tag)); } catch { }
-                return;
-            }
-            versionTag = tag.ToUpperInvariant();
-            Invalidate();
-        }
-
-        public void SetProgress(int percent, string status, string detail)
-        {
-            if (IsDisposed) return;
-            if (InvokeRequired)
-            {
-                try { BeginInvoke(() => SetProgress(percent, status, detail)); } catch { }
-                return;
-            }
-            progressPercent = Math.Clamp(percent, 0, 100);
-            statusText = status;
-            detailText = detail;
-            Invalidate();
-        }
-
-        internal void Finish()
-        {
-            if (IsDisposed) return;
-            if (InvokeRequired)
-            {
-                try { BeginInvoke(Finish); } catch { }
-                return;
-            }
-            completed = true;
-            Close();
-        }
-
-        internal void ShowFailure(string message, string logPath)
-        {
-            if (IsDisposed) return;
-            if (InvokeRequired) { BeginInvoke(() => ShowFailure(message, logPath)); return; }
-            completed = true;
-            closeButton.Enabled = true;
-            closeButton.Text = "Close";
-            errorDetails.Text = message;
-            errorDetails.Visible = true;
-            SetProgress(progressPercent, "Installation failed", "Log: " + logPath);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            var g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-
-            using var borderPen = new Pen(BorderColor, 1);
-            g.DrawRectangle(borderPen, 0, 0, Width - 1, Height - 1);
-
-            using var accentBrush = new SolidBrush(AccentMint);
-            g.FillRectangle(accentBrush, 1, 1, Width - 2, 3);
-
-            using var eyebrowFont = new Font("Segoe UI", 8f, FontStyle.Bold);
-            using var titleFont = new Font("Segoe UI", 13.5f, FontStyle.Bold);
-            using var statusFont = new Font("Segoe UI", 9.5f, FontStyle.Bold);
-            using var detailFont = new Font("Segoe UI", 8.5f, FontStyle.Regular);
-            using var pctFont = new Font("Segoe UI", 10f, FontStyle.Bold);
-            using var primaryBrush = new SolidBrush(TextPrimary);
-            using var mutedBrush = new SolidBrush(TextMuted);
-
-            g.DrawString("ROBLOX EXTERNAL · AUTO UPDATER", eyebrowFont, accentBrush, 24, 20);
-            g.DrawString("Installation & Update", titleFont, primaryBrush, 24, 38);
-
-            // Version pill on top-right
-            var pillSize = g.MeasureString(versionTag, eyebrowFont);
-            var pillRect = new RectangleF(Width - pillSize.Width - 40, 22, pillSize.Width + 16, 22);
-            using (var pillBg = new SolidBrush(CardBg))
-            using (var pillBorder = new Pen(BorderColor, 1))
-            {
-                g.FillRectangle(pillBg, pillRect);
-                g.DrawRectangle(pillBorder, pillRect.X, pillRect.Y, pillRect.Width, pillRect.Height);
-            }
-            g.DrawString(versionTag, eyebrowFont, accentBrush, pillRect.X + 8, pillRect.Y + 4);
-
-            // Status card
-            var cardRect = new Rectangle(24, 78, Width - 48, 92);
-            using (var cardBrush = new SolidBrush(CardBg))
-            {
-                g.FillRectangle(cardBrush, cardRect);
-                g.DrawRectangle(borderPen, cardRect);
-            }
-
-            g.DrawString(statusText, statusFont, primaryBrush, 38, 92);
-            var pctLabel = $"{progressPercent}%";
-            var pctWidth = g.MeasureString(pctLabel, pctFont).Width;
-            g.DrawString(pctLabel, pctFont, accentBrush, Width - 38 - pctWidth, 91);
-
-            // Progress bar track
-            var barRect = new Rectangle(38, 120, Width - 76, 10);
-            using (var trackBrush = new SolidBrush(Color.FromArgb(32, 42, 56)))
-            {
-                g.FillRectangle(trackBrush, barRect);
-            }
-            var fillWidth = (int)Math.Round(barRect.Width * (progressPercent / 100.0));
-            if (fillWidth > 0)
-            {
-                g.FillRectangle(accentBrush, new Rectangle(barRect.X, barRect.Y, fillWidth, barRect.Height));
-            }
-
-            g.DrawString(detailText, detailFont, mutedBrush, 38, 140);
-        }
-    }
 }

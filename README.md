@@ -6,7 +6,7 @@ On each launch, the downloader checks this repository's latest stable GitHub rel
 
 The app's per-game and custom-profile settings remain in `%LOCALAPPDATA%\RobloxExternal\game-profiles.json`, with `config.json` kept for compatibility. Updates preserve both files. Update diagnostics are written to `%LOCALAPPDATA%\RobloxExternal\downloader.log`.
 
-The progress window opens before installation work. Cancel stops update checks/downloads, and startup errors stay visible. Shortcut setup uses the native Windows shell and has a time limit; Windows Script Host and a separately installed .NET runtime are not required. Direct app launches also check through the compatible bundled updater. A failed update keeps the working installed version available.
+The CMD window opens before installation work. Ctrl+C stops update checks and downloads. Startup errors remain visible until Enter is pressed when launched by double-click. Shortcut setup uses the native Windows shell and has a time limit; Windows Script Host and a separately installed .NET runtime are not required. Direct app launches also check through the compatible bundled updater. A failed update keeps the working installed version available.
 
 If an older downloader is already stuck in Task Manager, end that old process once and run the newest downloader from this repository. The fixed downloader explains competing launches instead of silently disappearing.
 
@@ -32,7 +32,7 @@ The release script runs the installer and app regression checks, uploads a draft
 
 ## Access list
 
-Add one exact Roblox username per line under **Banned users** to block that account on its next launch. Put the username under **Unbanned users** to restore access and remove its local ban marker. Unbanned users take precedence if a name appears in both lists. The app reports the Roblox username to the owner's Discord webhook once per Roblox process launch.
+Add one exact Roblox username per line under **Banned users** to block that account on its next launch and show a CMD ban notice. Put the username under **Unbanned users** to restore access and remove its local ban marker. Unbanned users take precedence if a name appears in both lists. The app reports the Roblox username to the owner's Discord webhook once per Roblox process launch.
 
 ### Banned users:
 
