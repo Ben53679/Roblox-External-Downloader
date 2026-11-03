@@ -4,7 +4,7 @@
 4. enjoy ;)
 
 
-Latest update: **v0.2.32** uses regular hyphens throughout the menu and downloaded release text. **Anti speed camera** remains available in its own Notruf Hamburg tab. Run the downloader as administrator, choose Notruf Hamburg, then enable it in its own tab and configure the posted speed limit (50 km/h by default). Existing installations receive the update on their next launcher start.
+Latest update: **v0.2.33** improves jump velocity prediction using an anonymized live Notruf recording. It retains observed gravity through small replication errors and handles apex pauses without changing the ground level. **Anti speed camera** remains available in its own Notruf Hamburg tab. Run the downloader as administrator, choose Notruf Hamburg, then enable it in its own tab and configure the posted speed limit (50 km/h by default). Existing installations receive the update on their next launcher start.
 
 Manual fake lag is removed. The Beta tab's Silent aim section is a disabled placeholder, not an active feature. Startup username reports run once per app launch instead of on game joins.
 
